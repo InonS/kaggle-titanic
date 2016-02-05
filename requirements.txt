@@ -1,1 +1,3 @@
+nbformat
+IPython
 numpy
