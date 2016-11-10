@@ -27,7 +27,7 @@ class DataProcessor:
     6) Statistically consistent procedures (should be preformed prior to any inconsistent ones)
         a) Standardization (a.k.a. z-score): Shifting to zero mean, and scaling to unit variance
     7) Statistically inconsistent procedures
-        a) Imputation of missing values (zero, mean, median, k-nn, etc. based on dataset statistics)
+        a) Imputation of missing values (zero, mean, median, random draw from the hot deck distribution, k-nn, etc. based on dataset statistics)
         b) Sub-sampling: Censoring, Binning (the limit of which is Binarization)
     8) Enrich features (e.g. generating polynomial features)
     """
@@ -218,11 +218,16 @@ def test(model):
 
     y_hat = model_prediction(model, X)
 
-    epoch_time = int(datetime.now().timestamp())
-    with(open('out/survival_' + str(model) + "_" + str(epoch_time) + '.csv', 'w')) as submission_file:
+    with(
+            open('out/survival_' + str(epoch_seconds_now()) + "_" + type(model).__name__ + '.csv',
+                 'w')) as submission_file:
         csv_writer = csv_writer_(submission_file)
         csv_writer.writerow(["PassengerId", "Survived"])
         csv_writer.writerows(zip(ids, y_hat))
+
+
+def epoch_seconds_now():
+    return int(datetime.now().timestamp())
 
 
 def model_prediction(model, X, y=None):
@@ -236,44 +241,47 @@ def model_prediction(model, X, y=None):
 
         scores = cross_val_score(model, X, y, n_jobs=cpu_count() - 2, verbose=3)
         debug("cross-validation scores: {}".format(scores))  # [ 0.78787879  0.83164983  0.81144781]
-    else:
+
         y_hat = cross_val_predict(model, X, y, n_jobs=cpu_count() - 2, verbose=3)
     return y_hat
 
 
 def model_selection():
-    # linear models
-    lrcv = LogisticRegressionCV(verbose=3, n_jobs=cpu_count() - 2)
-    sgdc = SGDClassifier(verbose=3, n_jobs=cpu_count() - 2)
-    rccv = RidgeClassifierCV()
+    classifiers = {
+        # linear models
+        "lrcv": LogisticRegressionCV(max_iter=1000, n_jobs=cpu_count() - 2, verbose=3),
+        "sgdc": SGDClassifier(verbose=3, n_jobs=cpu_count() - 2),
+        "rccv": RidgeClassifierCV(),
 
-    # naive Bayes
-    gnb = GaussianNB()
+        # naive Bayes
+        "gnb": GaussianNB(),
 
-    # ensemble (random forests, boosting, etc.)
-    rfc = RandomForestClassifier(n_estimators=100, oob_score=True, n_jobs=cpu_count() - 2, verbose=3)
-    xtc = ExtraTreesClassifier(n_estimators=100, bootstrap=True, oob_score=True, n_jobs=cpu_count() - 2, verbose=3)
-    gbc = GradientBoostingClassifier(verbose=3)
+        # ensemble (random forests, boosting, etc.)
+        "rfc": RandomForestClassifier(n_estimators=100, oob_score=True, n_jobs=cpu_count() - 2, verbose=3),
+        "xtc": ExtraTreesClassifier(n_estimators=100, bootstrap=True, oob_score=True, n_jobs=cpu_count() - 2,
+                                    verbose=3),
+        "gbc": GradientBoostingClassifier(verbose=3),
 
-    # neural nets
-    mlpc = MLPClassifier(verbose=True)
-
-    classifiers = enumerate((lrcv, sgdc, rccv, gnb, rfc, xtc, gbc, mlpc))
+        # neural nets
+        "mlpc": MLPClassifier(verbose=True)
+    }
 
     independant_classifiers(classifiers)
     voting_classification(classifiers)
 
 
 def independant_classifiers(classifiers):
-    for i, model in classifiers:
-        info("%d training %s" % (i, str(model)))
+    for model_name in classifiers.keys():
+        model = classifiers[model_name]
+        info("%s training %s" % (model_name, model))
         model = train(model)
         test(model)
 
 
 def voting_classification(classifiers):
     info("training VotingClassifier")
-    voting = VotingClassifier([model for model in classifiers], n_jobs=cpu_count() - 2)
+    voting = VotingClassifier([(model_name, classifiers[model_name]) for model_name in classifiers.keys()],
+                              n_jobs=cpu_count() - 2)
     model = train(voting)
     test(model)
 
@@ -282,10 +290,10 @@ if __name__ == '__main__':
     """
     TODO Pipeline
     """
-    basicConfig(level=DEBUG)
 
+    log_file_name = __file__[:-3] + str(epoch_seconds_now()) + ".log"
+    log_file_stream = open(log_file_name, "a")
+    basicConfig(level=DEBUG, stream=log_file_stream)
+    stdout = log_file_stream
+    stderr = log_file_stream
     model_selection()
-
-    model_ = GradientBoostingClassifier(verbose=3)
-    model_ = train(model_)
-    test(model_)
