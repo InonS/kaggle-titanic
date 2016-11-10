@@ -7,12 +7,31 @@ from os import cpu_count
 from numpy import zeros, unique, bincount, nan
 from pandas import read_csv, DataFrame
 from pandas.algos import int8
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.metrics import confusion_matrix
+from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier, VotingClassifier
+from sklearn.linear_model import LogisticRegressionCV, RidgeClassifierCV, SGDClassifier
+from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import cross_val_score, cross_val_predict
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neural_network import MLPClassifier
 
 
 class DataProcessor:
+    """
+    TODO inherit sklearn.base.TransformerMixin
+
+    1) Enrich features by bringing in more sources
+    2) Remove any known background biases
+    3) Encoding (a.k.a. enumeration) of categorical features
+    4) Vectorization: Break up data object into numeric components, represented as a vector
+    5) Vector Normalization: Scaling vector quantities to have unit magnitude (if only direction / relative component weights are important)
+    6) Statistically consistent procedures (should be preformed prior to any inconsistent ones)
+        a) Standardization (a.k.a. z-score): Shifting to zero mean, and scaling to unit variance
+    7) Statistically inconsistent procedures
+        a) Imputation of missing values (zero, mean, median, k-nn, etc. based on dataset statistics)
+        b) Sub-sampling: Censoring, Binning (the limit of which is Binarization)
+    8) Enrich features (e.g. generating polynomial features)
+    """
+
     def __init__(self, data_file_path):
         self.data_file_path = data_file_path
 
@@ -24,7 +43,7 @@ class DataProcessor:
         info("Summary of attributes with values missing:")
         self.missing_attributes_summary()
 
-    def __call__(self, *args, **kwargs):
+    def transform(self):
 
         info("Enumerating str/object data:")
         self.enumeration()
@@ -180,10 +199,12 @@ class DataProcessor:
 
 def train(model):
     processor = DataProcessor('data/train.csv')
-    ids, X, y = processor()
+    ids, X, y = processor.transform()
 
     model = model.fit(X, y)
-    model_prediction(model, X, y)
+    y_hat = model_prediction(model, X, y)
+    confusion_matrix(y, y_hat)
+    classification_report(y, y_hat)
     return model
 
 
@@ -193,33 +214,68 @@ def test(model):
     """
 
     processor = DataProcessor('data/test.csv')
-    ids, X, y = processor()
+    ids, X, y = processor.transform()
 
-    prediction = model_prediction(model, X, y)
-
-    # confusion_matrix(y[1], prediction[1])
+    y_hat = model_prediction(model, X)
 
     epoch_time = int(datetime.now().timestamp())
-    with(open('out/survival_' + str(epoch_time) + '.csv', 'w')) as f:
-        csv_writer = csv_writer_(f)
+    with(open('out/survival_' + str(model) + "_" + str(epoch_time) + '.csv', 'w')) as submission_file:
+        csv_writer = csv_writer_(submission_file)
         csv_writer.writerow(["PassengerId", "Survived"])
-        csv_writer.writerows(zip(ids, prediction))
+        csv_writer.writerows(zip(ids, y_hat))
 
 
 def model_prediction(model, X, y=None):
-    prediction = model.predict(X)
-    debug("prediction shape = {}".format(prediction.shape))
-    debug("unique predictions = {}".format(unique(prediction)))
-    debug("prediction count = {}".format(bincount(prediction, minlength=2)))
+    y_hat = model.predict(X)
+    debug("prediction shape = {}".format(y_hat.shape))
+    debug("unique predictions = {}".format(unique(y_hat)))
+    debug("prediction count = {}".format(bincount(y_hat, minlength=2)))
     if y is not None:
         score = model.score(X, y)
         debug("score = %f" % score)
 
         scores = cross_val_score(model, X, y, n_jobs=cpu_count() - 2, verbose=3)
         debug("cross-validation scores: {}".format(scores))  # [ 0.78787879  0.83164983  0.81144781]
+    else:
+        y_hat = cross_val_predict(model, X, y, n_jobs=cpu_count() - 2, verbose=3)
+    return y_hat
 
-        prediction = cross_val_predict(model, X, y, n_jobs=cpu_count() - 2, verbose=3)
-    return prediction
+
+def model_selection():
+    # linear models
+    lrcv = LogisticRegressionCV(verbose=3, n_jobs=cpu_count() - 2)
+    sgdc = SGDClassifier(verbose=3, n_jobs=cpu_count() - 2)
+    rccv = RidgeClassifierCV()
+
+    # naive Bayes
+    gnb = GaussianNB()
+
+    # ensemble (random forests, boosting, etc.)
+    rfc = RandomForestClassifier(n_estimators=100, oob_score=True, n_jobs=cpu_count() - 2, verbose=3)
+    xtc = ExtraTreesClassifier(n_estimators=100, bootstrap=True, oob_score=True, n_jobs=cpu_count() - 2, verbose=3)
+    gbc = GradientBoostingClassifier(verbose=3)
+
+    # neural nets
+    mlpc = MLPClassifier(verbose=True)
+
+    classifiers = enumerate((lrcv, sgdc, rccv, gnb, rfc, xtc, gbc, mlpc))
+
+    independant_classifiers(classifiers)
+    voting_classification(classifiers)
+
+
+def independant_classifiers(classifiers):
+    for i, model in classifiers:
+        info("%d training %s" % (i, str(model)))
+        model = train(model)
+        test(model)
+
+
+def voting_classification(classifiers):
+    info("training VotingClassifier")
+    voting = VotingClassifier([model for model in classifiers], n_jobs=cpu_count() - 2)
+    model = train(voting)
+    test(model)
 
 
 if __name__ == '__main__':
@@ -228,21 +284,7 @@ if __name__ == '__main__':
     """
     basicConfig(level=DEBUG)
 
-    # rfc = RandomForestClassifier(n_estimators=100, oob_score=True, n_jobs=cpu_count() - 2, verbose=3)
-    # xtc = ExtraTreesClassifier(n_estimators=100, bootstrap=True, oob_score=True, n_jobs=cpu_count() - 2, verbose=3)
-    # gbc = GradientBoostingClassifier(verbose=3)
-    # mlpc = MLPClassifier(verbose=True)
-    # estimators = enumerate((rfc, xtc, gbc, mlpc))
-    #
-    # for i, model_ in estimators:
-    #     info("%d training %s" % (i, str(model_)))
-    #     model_ = train(model_)
-    #     test(model_)
-    #
-    # voting = VotingClassifier([model_ for model_ in estimators], n_jobs=cpu_count() - 2)
-    # info("training VotingClassifier")
-    # model_ = train(voting)
-    # test(model_)
+    model_selection()
 
     model_ = GradientBoostingClassifier(verbose=3)
     model_ = train(model_)
