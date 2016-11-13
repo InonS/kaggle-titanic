@@ -45,17 +45,18 @@ class DataProcessor:
 
     def transform(self):
 
-        info("Enumerating str/object data:")
-        self.enumeration()
+        self.descriptive_feature_engineering()
 
         info("Filling missing data:")
         self.imputation()
+
+        self.data_leak_example()
 
         info("Separating labels and observation IDs from kept attributes")
         passenger_ids, y = self.separate_id_and_target_from_features()
 
         info("Feature engineering:")
-        self.feature_engineering()
+        self.predictive_feature_engineering()
 
         info("Cleansed %s:" % self.data_file_path)
         self.check_cleansed()
@@ -100,9 +101,10 @@ class DataProcessor:
             self.df.count().unique()) == 1, \
             "not all attributes have the same number of observations! check for missing values"
 
-    def feature_engineering(self):
-        self.df['FamilySize'] = self.df['SibSp'] + self.df['Parch']
-        self.df['Age*Class'] = self.df.AgeFill * self.df.Pclass
+    def predictive_feature_engineering(self):
+        self.df['is_adult'] = self.df['AgeFill'] > 16
+        self.family_size()
+        self.df['Age*Class'] = self.df.AgeFill * self.df.Pclass  # survival more likely for young affluent individuals than elderly poor ones?
 
     def imputation(self):
         """
@@ -112,7 +114,8 @@ class DataProcessor:
         info("Filling other missing numeric values with zeroeth-order approximation -- the most probable value (mode):")
         self.zeroeth_order_numerical_imputation()
 
-        info("Filling Age:")
+        info("Filling Age using joint distribution:")
+        # TODO EDA to find correlations. Perform hot deck imputation from these joint distribution.
         self.impute_age()
 
     def impute_age(self):
@@ -162,6 +165,12 @@ class DataProcessor:
         debug("Enumerating Embarked:")
         self.enumerate_embarked()
 
+        self.enumerate_fare()
+
+        self.enumerate_title_and_family()
+
+        self.enumerate_age()
+
     def enumerate_embarked(self):
         embarked_values = self.df['Embarked']
         debug("unique 'Embarked' values: {}".format(embarked_values.unique()))
@@ -195,6 +204,47 @@ class DataProcessor:
         debug("tail: {}".format(self.df.tail()))
         debug("info: {}".format(self.df.info()))
         debug("describe: {}".format(self.df.describe()))
+
+    def enumerate_title_and_family(self):
+        # "family_id": int
+        # "title_bin": enum (correlates with gender and age? assist in imputation of those fields)
+        pass
+
+    def enumerate_fare(self):
+        # TODO bin "fare": "fare_bin": enum (correlates with Pclass? assist in imputation of that field)
+        pass
+
+    def enumerate_age(self):
+        # TODO extract features from "Age" field:
+        # "age_bin": enum
+        pass
+
+    def tokenization(self):
+        # TODO extract features from "name" field:
+        # "family_name": str
+        # "title": str
+        pass
+
+    def family_size(self):
+        self.df['FamilySize'] = self.df['SibSp'] + self.df['Parch']
+        self.df['has_no_family'] = self.df['SibSp'] + self.df['Parch'] == 0
+        self.df['is_with_children'] = self.df['Parch'] > 0 and self.df['is_adult'] > 0
+
+    def data_leak_example(self):
+        # info("extract binary features from 'SibSp' and 'ParCh' fields:")
+        # "has_any_family_survived": bool
+        # "is_perishing_mother": bool
+        # "is_surviving_father": bool
+        pass
+
+    def descriptive_feature_engineering(self):
+
+        info("Tokenize str data:")
+        self.tokenization()
+
+        info("Enumerating str/object data:")
+        self.enumeration()
+
 
 
 def train(model):
@@ -280,10 +330,17 @@ def independant_classifiers(classifiers):
 
 def voting_classification(classifiers):
     info("training VotingClassifier")
-    voting = VotingClassifier([(model_name, classifiers[model_name]) for model_name in classifiers.keys()],
-                              n_jobs=cpu_count() - 2)
+    # models_by_name = [(model_name, classifiers[model_name]) for model_name in classifiers.keys()]
+    voting = VotingClassifier(classifiers.items(), n_jobs=cpu_count() - 2)
     model = train(voting)
     test(model)
+
+
+def setup_logger():
+    log_file_name = __file__[:-3] + str(epoch_seconds_now()) + ".log"
+    logger_stream_ = open(log_file_name, "a")
+    basicConfig(level=DEBUG, stream=logger_stream_)
+    return logger_stream_
 
 
 if __name__ == '__main__':
@@ -291,9 +348,7 @@ if __name__ == '__main__':
     TODO Pipeline
     """
 
-    log_file_name = __file__[:-3] + str(epoch_seconds_now()) + ".log"
-    log_file_stream = open(log_file_name, "a")
-    basicConfig(level=DEBUG, stream=log_file_stream)
-    stdout = log_file_stream
-    stderr = log_file_stream
+    logger_stream = setup_logger()
+    stdout = logger_stream
+    stderr = logger_stream
     model_selection()
