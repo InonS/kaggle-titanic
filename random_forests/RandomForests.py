@@ -5,6 +5,7 @@ from logging import basicConfig, debug, warning, info, DEBUG
 from os import cpu_count
 
 from numpy import zeros, unique, bincount, nan
+from pandas import qcut
 from pandas import read_csv, DataFrame
 from pandas.algos import int8
 from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier, VotingClassifier
@@ -42,6 +43,8 @@ class DataProcessor:
 
         info("Summary of attributes with values missing:")
         self.missing_attributes_summary()
+
+        self.unique_titles = {}
 
     def transform(self):
 
@@ -102,9 +105,11 @@ class DataProcessor:
             "not all attributes have the same number of observations! check for missing values"
 
     def predictive_feature_engineering(self):
-        self.df['is_adult'] = self.df['AgeFill'] > 16
+        self.df['IsAdult'] = self.df['AgeFill'] > 16
+        self.df['AgeBin'] = qcut(self.df['AgeFill'], 5)
         self.family_size()
-        self.df['Age*Class'] = self.df.AgeFill * self.df.Pclass  # survival more likely for young affluent individuals than elderly poor ones?
+        self.df[
+            'Age*Class'] = self.df.AgeFill * self.df.Pclass  # survival more likely for young affluent individuals than elderly poor ones?
 
     def imputation(self):
         """
@@ -165,11 +170,9 @@ class DataProcessor:
         debug("Enumerating Embarked:")
         self.enumerate_embarked()
 
+        self.enumerate_name()
+
         self.enumerate_fare()
-
-        self.enumerate_title_and_family()
-
-        self.enumerate_age()
 
     def enumerate_embarked(self):
         embarked_values = self.df['Embarked']
@@ -205,30 +208,24 @@ class DataProcessor:
         debug("info: {}".format(self.df.info()))
         debug("describe: {}".format(self.df.describe()))
 
-    def enumerate_title_and_family(self):
-        # "family_id": int
-        # "title_bin": enum (correlates with gender and age? assist in imputation of those fields)
-        pass
+    def enumerate_name(self):
+        self.enumerate_title()
+        self.enumerate_family()
 
     def enumerate_fare(self):
-        # TODO bin "fare": "fare_bin": enum (correlates with Pclass? assist in imputation of that field)
-        pass
-
-    def enumerate_age(self):
-        # TODO extract features from "Age" field:
-        # "age_bin": enum
-        pass
+        """
+        TODO correlates with Pclass? assist in imputation of that field
+        """
+        self.df['FareBin'] = qcut(self.df['Fare'], 7)
 
     def tokenization(self):
-        # TODO extract features from "name" field:
         # "family_name": str
-        # "title": str
-        pass
+        self.tokenize_title()
 
     def family_size(self):
         self.df['FamilySize'] = self.df['SibSp'] + self.df['Parch']
-        self.df['has_no_family'] = self.df['SibSp'] + self.df['Parch'] == 0
-        self.df['is_with_children'] = self.df['Parch'] > 0 and self.df['is_adult'] > 0
+        self.df['HasNoFamily'] = self.df['SibSp'] + self.df['Parch'] == 0
+        self.df['IsWithChildren'] = self.df['Parch'] > 0 and self.df['IsAdult'] > 0
 
     def data_leak_example(self):
         # info("extract binary features from 'SibSp' and 'ParCh' fields:")
@@ -238,6 +235,10 @@ class DataProcessor:
         pass
 
     def descriptive_feature_engineering(self):
+        """
+        Develop features which correlate with others which are missing entries, and which will serve in their imputation
+        If the original features add noise but no information (relative to the derived features), drop the original
+        """
 
         info("Tokenize str data:")
         self.tokenization()
@@ -245,6 +246,47 @@ class DataProcessor:
         info("Enumerating str/object data:")
         self.enumeration()
 
+    def enumerate_title(self):
+        """
+        correlates with gender and age? assist in imputation of those fields
+        TODO hard code equivalent titles to merge bins
+        """
+        self.df['TitleBin'] = self.df['Title'].dropna()
+        self.df['TitleBin'] = self.df['TitleBin'].map(self.unique_titles).astype(int8)
+
+    def enumerate_family(self):
+        # "family_id": int
+        pass
+
+    def tokenize_title(self):
+        """
+        TODO suffix titles (e.g. MD, Ph.D., Esq.)
+        """
+
+        last_title_enum = 0
+
+        for row in self.df.iterrows():
+
+            name = row['Name']
+            if name is None:
+                continue
+
+            name_str = str(name)
+            if len(name_str) == 0:
+                continue
+
+            name_prefix = name_str.split(sep=' ', maxsplit=1)[0]
+            if len(name_prefix) < 3 or name_prefix[-1] != '.':
+                # prefix is not a title (probably first initial)
+                continue
+
+            title = name_prefix[:-2].capitalize()
+            row['Title'] = title
+
+            existing_title_enum = self.unique_titles[title]
+            if existing_title_enum is None:
+                last_title_enum += 1
+                self.unique_titles[title] = last_title_enum
 
 
 def train(model):
