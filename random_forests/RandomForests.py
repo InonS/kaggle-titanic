@@ -44,7 +44,7 @@ class DataProcessor:
         info("Summary of attributes with values missing:")
         self.missing_attributes_summary()
 
-        self.unique_titles = {}
+        self.unique_titles = {None: -1}
 
     def transform(self):
 
@@ -106,7 +106,7 @@ class DataProcessor:
 
     def predictive_feature_engineering(self):
         self.df['IsAdult'] = self.df['AgeFill'] > 16
-        self.df['AgeBin'] = qcut(self.df['AgeFill'], 5)
+        self.df['AgeBin'] = qcut(self.df['AgeFill'], 5, labels=False)
         self.family_size()
         self.df[
             'Age*Class'] = self.df.AgeFill * self.df.Pclass  # survival more likely for young affluent individuals than elderly poor ones?
@@ -159,7 +159,7 @@ class DataProcessor:
         """
         This makes sense even for unsorted enumerations, however using the average does not.
         """
-        for field in ('EmbarkedEnum', 'SibSp', 'Parch', 'Fare'):
+        for field in ('EmbarkedEnum', 'SibSp', 'Parch', 'Fare', 'FareBin'):
             mode = self.df[field].dropna().mode().values[0]
             self.df[field].fillna(mode, inplace=True)
 
@@ -216,7 +216,8 @@ class DataProcessor:
         """
         TODO correlates with Pclass? assist in imputation of that field
         """
-        self.df['FareBin'] = qcut(self.df['Fare'], 7)
+        self.df['FareBin'] = qcut(self.df['Fare'], 7, labels=False)
+
 
     def tokenization(self):
         # "family_name": str
@@ -225,7 +226,7 @@ class DataProcessor:
     def family_size(self):
         self.df['FamilySize'] = self.df['SibSp'] + self.df['Parch']
         self.df['HasNoFamily'] = self.df['SibSp'] + self.df['Parch'] == 0
-        self.df['IsWithChildren'] = self.df['Parch'] > 0 and self.df['IsAdult'] > 0
+        # TODO self.df['IsWithChildren'] = self.df['Parch'] > 0 and self.df['IsAdult'] > 0
 
     def data_leak_example(self):
         # info("extract binary features from 'SibSp' and 'ParCh' fields:")
@@ -249,10 +250,12 @@ class DataProcessor:
     def enumerate_title(self):
         """
         correlates with gender and age? assist in imputation of those fields
-        TODO hard code equivalent titles to merge bins
+        TODO hard code equivalent titles to merge bins: {'Mme': 8, 'Miss': 3, 'Capt': 15, 'Rev': 6, 'Don': 5, 'Dr': 7, 'Ms': 9, 'Lady': 11, 'Mr': 1, 'Mrs': 2, 'Mlle': 13, 'Master': 4, 'Sir': 12, 'Jonkheer': 16, 'Col': 14, 'Major': 10}
         """
         self.df['TitleBin'] = self.df['Title'].dropna()
         self.df['TitleBin'] = self.df['TitleBin'].map(self.unique_titles).astype(int8)
+        self.df['TitleBin'].fillna(value=-1)
+        self.df.drop('Title', axis=1, inplace=True)
 
     def enumerate_family(self):
         # "family_id": int
@@ -265,9 +268,11 @@ class DataProcessor:
 
         last_title_enum = 0
 
+        self.df.insert(self.df.ndim, 'Title', None)
         for row in self.df.iterrows():
 
-            name = row['Name']
+            series_data = row[1]
+            name = series_data['Name']
             if name is None:
                 continue
 
@@ -275,18 +280,32 @@ class DataProcessor:
             if len(name_str) == 0:
                 continue
 
-            name_prefix = name_str.split(sep=' ', maxsplit=1)[0]
+            split_on_commas = name_str.split(sep=", ", maxsplit=1)
+            if split_on_commas is None or len(split_on_commas) < 2:
+                continue
+
+            after_first_comma = split_on_commas[1]
+            if after_first_comma is None:
+                continue
+
+            split_on_spaces = after_first_comma.split(sep=' ', maxsplit=1)
+            if split_on_spaces is None or len(split_on_spaces) < 2:
+                continue
+
+            name_prefix = split_on_spaces[0]
             if len(name_prefix) < 3 or name_prefix[-1] != '.':
                 # prefix is not a title (probably first initial)
                 continue
 
-            title = name_prefix[:-2].capitalize()
-            row['Title'] = title
+            title = name_prefix[:-1].capitalize()
+            # series_data['Title'] = title
+            self.df.set_value(row[0], 'Title', title)
 
-            existing_title_enum = self.unique_titles[title]
-            if existing_title_enum is None:
+            if title not in self.unique_titles:
                 last_title_enum += 1
                 self.unique_titles[title] = last_title_enum
+
+        debug("COUNT(DISTINCT 'Title') FROM df GROUP BY 'Title' = {} (sum={})".format(self.df.groupby('Title').Title.count(), self.df.groupby('Title').Title.count().sum()))
 
 
 def train(model):
@@ -393,4 +412,7 @@ if __name__ == '__main__':
     logger_stream = setup_logger()
     stdout = logger_stream
     stderr = logger_stream
-    model_selection()
+    # model_selection()
+    model = RandomForestClassifier(n_estimators=100, oob_score=True, n_jobs=cpu_count() - 2, verbose=3)
+    model = train(model)
+    test(model)
