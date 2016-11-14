@@ -1,8 +1,10 @@
 # coding=utf-8
+from collections import namedtuple
 from csv import writer as csv_writer_
 from datetime import datetime
 from logging import DEBUG, basicConfig, debug, info, warning
 from os import cpu_count
+from os.path import altsep, pardir, sep
 
 from numpy import bincount, nan, unique, zeros
 from pandas import DataFrame, qcut, read_csv
@@ -44,6 +46,8 @@ class DataProcessor:
         self.missing_attributes_summary()
 
         self.unique_titles = {None: -1}
+        self.unique_tokens = {}
+        self.unique_families = {None: -1}
 
     def transform(self):
 
@@ -116,7 +120,7 @@ class DataProcessor:
         """
 
         info("Filling other missing numeric values with zeroeth-order approximation -- the most probable value (mode):")
-        self.zeroeth_order_numerical_imputation()
+        self.zeroth_order_numerical_imputation()
 
         info("Filling Age using joint distribution:")
         # TODO EDA to find correlations. Perform hot deck imputation from these joint distribution.
@@ -127,6 +131,8 @@ class DataProcessor:
         Collect median Age for each Passenger segment, based on Gender and Pclass (which don't have to be enumerated!).
         Impute Age for each Passenger missing an Age, based on median of other passengers with same Gender and Pclass.
         TODO: Generalize for *feature_names. Create generator taking *unique_values_for_feature and returning tuple of enumerations
+
+        http://pandas.pydata.org/pandas-docs/stable/indexing.html#different-choices-for-indexing
         """
         # create empty bins for median Age, based on each possible unique combination of Gender and Pclass
         gender_values = self.df['Gender']
@@ -148,13 +154,13 @@ class DataProcessor:
         for i, g in enumerate(unique_genders):
             for j, c in enumerate(unique_pclasses):
                 entries_missing_age_with_given_gender_and_pclass = \
-                    (self.df.Age.isnull()) & (self.df.Gender == g) & (self.df.Pclass == c)
+                    (self.df.Age.isnull()) & (self.df.Gender == g) & (self.df.Pclass == c)  # binary indexing
                 self.df.loc[entries_missing_age_with_given_gender_and_pclass, 'AgeFill'] = median_ages[i, j]
 
         # drop old column (with missing values)
         self.df.drop(['Age'], axis=1, inplace=True)
 
-    def zeroeth_order_numerical_imputation(self):
+    def zeroth_order_numerical_imputation(self):
         """
         This makes sense even for unsorted enumerations, however using the average does not.
         """
@@ -206,6 +212,8 @@ class DataProcessor:
         debug("tail: {}".format(self.df.tail()))
         debug("info: {}".format(self.df.info()))
         debug("describe: {}".format(self.df.describe()))
+        debug("covariance: {}".format(self.df.cov()))
+        debug("correlation: {}".format(self.df.corr()))
 
     def enumerate_name(self):
         self.enumerate_title()
@@ -218,13 +226,18 @@ class DataProcessor:
         self.df['FareBin'] = qcut(self.df['Fare'], 7, labels=False)
 
     def tokenization(self):
-        # "family_name": str
+        self.tokenize_family()
         self.tokenize_title()
 
     def family_size(self):
         self.df['FamilySize'] = self.df['SibSp'] + self.df['Parch']
         self.df['HasNoFamily'] = self.df['SibSp'] + self.df['Parch'] == 0
-        # TODO self.df['IsWithChildren'] = self.df['Parch'] > 0 and self.df['IsAdult'] > 0
+        self.is_with_children()
+
+    def is_with_children(self):
+        self.df.insert(self.df.ndim, 'IsWithChildren', False)
+        is_adult_with_children_or_parents = (self.df['Parch'] > 0) & (self.df['IsAdult'] > 0)  # binary indexing
+        self.df.loc[is_adult_with_children_or_parents, 'IsWithChildren'] = True
 
     def data_leak_example(self):
         # info("extract binary features from 'SibSp' and 'ParCh' fields:")
@@ -255,9 +268,14 @@ class DataProcessor:
         self.df['TitleBin'].fillna(value=-1)
         self.df.drop('Title', axis=1, inplace=True)
 
+    def enumerate_feature(self, feature, enum_feature):
+        self.df[enum_feature] = self.df[feature].dropna()
+        self.df[enum_feature] = self.df[enum_feature].map(self.unique_tokens[feature]).astype(int8)
+        self.df[enum_feature].fillna(value=-1)
+        self.df.drop(feature, axis=1, inplace=True)
+
     def enumerate_family(self):
-        # "family_id": int
-        pass
+        self.enumerate_feature('FamilyName', 'FamilyId')
 
     def tokenize_title(self):
         """
@@ -306,11 +324,72 @@ class DataProcessor:
         debug("COUNT(DISTINCT 'Title') FROM df GROUP BY 'Title' = {} (sum={})".format(
             self.df.groupby('Title').Title.count(), self.df.groupby('Title').Title.count().sum()))
 
+    def tokenize_title_from_name(self, name_str):
+        split_on_commas = name_str.split(sep=", ", maxsplit=1)
+        if split_on_commas is None or len(split_on_commas) < 2:
+            return None
 
-def train(model):
-    processor = DataProcessor('data/train.csv')
-    ids, X, y = processor.transform()
+        after_first_comma = split_on_commas[1]
+        if after_first_comma is None:
+            return None
 
+        split_on_spaces = after_first_comma.split(sep=' ', maxsplit=1)
+        if split_on_spaces is None or len(split_on_spaces) < 2:
+            return None
+
+        name_prefix = split_on_spaces[0]
+        if len(name_prefix) < 3 or name_prefix[-1] != '.':
+            # prefix is not a title (probably first initial)
+            return None
+
+        return name_prefix[:-1].capitalize()
+
+    def tokenize(self, feature, token, tokenization_func):
+        last_index = 0
+        tokens_dict = self.unique_tokens[token] = {}
+
+        self.df.insert(self.df.ndim, token, None)
+        for row in self.df.iterrows():
+
+            series_data = row[1]
+            to_tokenize = series_data[feature]
+            if to_tokenize is None:
+                continue
+
+            str_to_tokenize = str(to_tokenize)
+            if len(str_to_tokenize) == 0:
+                continue
+
+            extracted_token = tokenization_func(str_to_tokenize)
+            if extracted_token is None:
+                continue
+
+            self.df.set_value(row[0], token, extracted_token)
+
+            if extracted_token not in tokens_dict:
+                last_index += 1
+                tokens_dict[extracted_token] = last_index
+
+        debug("COUNT(DISTINCT 'token_name') FROM df GROUP BY 'token_name' = {} (sum={})".format(
+            self.df.groupby(token)[token].count(), self.df.groupby(token)[token].count().sum()))
+
+    def tokenize_family(self):
+
+        def family_tokenization(name_str):
+            split_on_commas = name_str.split(sep=',', maxsplit=1)
+            if split_on_commas is None or len(split_on_commas) < 2:
+                return None
+
+            before_first_comma = split_on_commas[0]
+            if before_first_comma is None:
+                return None
+
+            return before_first_comma.capitalize()
+
+        self.tokenize('Name', 'FamilyName', family_tokenization)
+
+
+def train(model, X, y):
     model = model.fit(X, y)
     y_hat = model_prediction(model, X, y)
     confusion_matrix(y, y_hat)
@@ -318,13 +397,15 @@ def train(model):
     return model
 
 
-def test(model):
+def preprocess(csv):
+    processor = DataProcessor(csv)
+    return processor.transform()
+
+
+def test(model, ids, X):
     """
     Test, save public test as csv: 'PassengerId', 'Survived'
     """
-
-    processor = DataProcessor('data/test.csv')
-    ids, X, y = processor.transform()
 
     y_hat = model_prediction(model, X)
 
@@ -337,6 +418,10 @@ def test(model):
 
 
 def epoch_seconds_now():
+    """
+    :return: whole number of seconds since midnight on New Year's night, 1970, until the current moment.
+    :rtype: int
+    """
     return int(datetime.now().timestamp())
 
 
@@ -357,6 +442,15 @@ def model_prediction(model, X, y=None):
 
 
 def model_selection():
+    MLDataSet = namedtuple('MLDataSet', ('ids', 'X', 'y'), True)
+
+    ids, X, y = preprocess('data/train.csv')
+    train_set = MLDataSet(ids, X, y)
+
+    ids, X, y = preprocess('data/test.csv')
+    assert y is None
+    test_set = MLDataSet(ids, X, y)
+
     classifiers = {
         # linear models
         "lrcv": LogisticRegressionCV(max_iter=1000, n_jobs=cpu_count() - 2, verbose=3),
@@ -376,29 +470,37 @@ def model_selection():
         "mlpc": MLPClassifier(verbose=True)
     }
 
-    independant_classifiers(classifiers)
-    voting_classification(classifiers)
+    independant_classifiers(classifiers, train_set, test_set)
+    voting_classification(classifiers, train_set, test_set)
 
 
-def independant_classifiers(classifiers):
+def independant_classifiers(classifiers, train_set, test_set):
     for model_name in classifiers.keys():
         model = classifiers[model_name]
         info("%s training %s" % (model_name, model))
-        model = train(model)
-        test(model)
+        evaluate_model(model, train_set, test_set)
 
 
-def voting_classification(classifiers):
+def evaluate_model(model, train_set, test_set):
+    model = train(model, train_set.X, train_set.y)
+    test(model, test_set.ids, test_set.X)
+
+
+def voting_classification(classifiers, train_set, test_set):
     info("training VotingClassifier")
-    # models_by_name = [(model_name, classifiers[model_name]) for model_name in classifiers.keys()]
     voting = VotingClassifier(classifiers.items(), n_jobs=cpu_count() - 2)
-    model = train(voting)
-    test(model)
+    evaluate_model(voting, train_set, test_set)
 
 
 def setup_logger():
-    log_file_name = __file__[:-3] + str(epoch_seconds_now()) + ".log"
-    logger_stream_ = open(log_file_name, "a")
+    current_file = str(__file__)
+    file_name_core = current_file[:-3].split(sep)[-1]
+    log_file_name = file_name_core + '_' + str(epoch_seconds_now()) + ".log"
+
+    # TODO current_path =
+    log_file_rel_path = sep.join(("out", "log", log_file_name))
+
+    logger_stream_ = open(log_file_rel_path, "a")
     basicConfig(level=DEBUG, stream=logger_stream_)
     return logger_stream_
 
@@ -411,7 +513,4 @@ if __name__ == '__main__':
     logger_stream = setup_logger()
     stdout = logger_stream
     stderr = logger_stream
-    # model_selection()
-    model = RandomForestClassifier(n_estimators=100, oob_score=True, n_jobs=cpu_count() - 2, verbose=3)
-    model = train(model)
-    test(model)
+    model_selection()
