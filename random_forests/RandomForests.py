@@ -1,17 +1,16 @@
 # coding=utf-8
 from csv import writer as csv_writer_
 from datetime import datetime
-from logging import basicConfig, debug, warning, info, DEBUG
+from logging import DEBUG, basicConfig, debug, info, warning
 from os import cpu_count
 
-from numpy import zeros, unique, bincount, nan
-from pandas import qcut
-from pandas import read_csv, DataFrame
+from numpy import bincount, nan, unique, zeros
+from pandas import DataFrame, qcut, read_csv
 from pandas.algos import int8
 from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier, VotingClassifier
 from sklearn.linear_model import LogisticRegressionCV, RidgeClassifierCV, SGDClassifier
 from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.model_selection import cross_val_score, cross_val_predict
+from sklearn.model_selection import cross_val_predict, cross_val_score
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neural_network import MLPClassifier
 
@@ -218,7 +217,6 @@ class DataProcessor:
         """
         self.df['FareBin'] = qcut(self.df['Fare'], 7, labels=False)
 
-
     def tokenization(self):
         # "family_name": str
         self.tokenize_title()
@@ -305,7 +303,8 @@ class DataProcessor:
                 last_title_enum += 1
                 self.unique_titles[title] = last_title_enum
 
-        debug("COUNT(DISTINCT 'Title') FROM df GROUP BY 'Title' = {} (sum={})".format(self.df.groupby('Title').Title.count(), self.df.groupby('Title').Title.count().sum()))
+        debug("COUNT(DISTINCT 'Title') FROM df GROUP BY 'Title' = {} (sum={})".format(
+            self.df.groupby('Title').Title.count(), self.df.groupby('Title').Title.count().sum()))
 
 
 def train(model):
