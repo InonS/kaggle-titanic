@@ -1,4 +1,9 @@
 # coding=utf-8
+
+"""
+Kaggle Titanic
+"""
+
 from collections import namedtuple
 from csv import writer as csv_writer_
 from datetime import datetime
@@ -6,15 +11,30 @@ from logging import DEBUG, basicConfig, debug, info, warning
 from os import cpu_count
 from os.path import sep
 
+from matplotlib.pyplot import savefig, tight_layout
 from numpy import bincount, nan, unique, zeros
 from pandas import DataFrame, qcut, read_csv
 from pandas.algos import int8
+from seaborn import jointplot
+from seaborn.linearmodels import corrplot
 from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier, VotingClassifier
 from sklearn.linear_model import LogisticRegressionCV, RidgeClassifierCV, SGDClassifier
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import cross_val_predict, cross_val_score
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neural_network import MLPClassifier
+
+
+def epoch_seconds_now():
+    """
+    :return: whole number of seconds since midnight on New Year's night, 1970, until the current moment.
+    :rtype: int
+    """
+    return int(datetime.now().timestamp())
+
+
+out_file_no_path = '_'.join((str(__file__)[:-3].split(sep)[-1], str(epoch_seconds_now())))
+plot_file_base = sep.join(("out", "plot", out_file_no_path))
 
 
 class DataProcessor:
@@ -53,6 +73,8 @@ class DataProcessor:
 
         info("information schema description:")
         self.information_schema_description()
+        tight_layout()
+        savefig('_'.join((plot_file_base, 'init')))
 
         info("Summary of attributes with values missing:")
         self.missing_attributes_summary()
@@ -115,6 +137,8 @@ class DataProcessor:
 
     def check_cleansed(self):
         self.information_schema_description()
+        tight_layout()
+        savefig('_'.join((plot_file_base, 'cleansed')))
         assert len(
             self.df.count().unique()) == 1, \
             "not all attributes have the same number of observations! check for missing values"
@@ -226,6 +250,12 @@ class DataProcessor:
         debug("describe: {}".format(self.df.describe()))
         debug("covariance: {}".format(self.df.cov()))
         debug("correlation: {}".format(self.df.corr()))
+        # TODO pairplot(self.df)
+        corrplot(self.df)
+        # mask_null = isnull(self.df)
+        # values = self.df.values
+        # mask_nan = isnan(values)
+        # heatmap(self.df, mask=mask)
 
     def enumerate_name(self):
         self.enumerate_title()
@@ -236,6 +266,11 @@ class DataProcessor:
         TODO correlates with Pclass? assist in imputation of that field
         """
         self.df['FareBin'] = qcut(self.df['Fare'], 7, labels=False)
+        debug("correlation between FareBin and Pclass (higher fare expected to correlate with higher class, \
+        i.e. smaller Pclass) = {}".format(self.df.corr()['FareBin']['Pclass']))
+        jointplot('FareBin', 'Pclass', self.df)
+        tight_layout()
+        savefig('_'.join((plot_file_base, 'farebin_vs_pclass')))
 
     def tokenization(self):
         self.tokenize_family()
@@ -273,7 +308,9 @@ class DataProcessor:
     def enumerate_title(self):
         """
         correlates with gender and age? assist in imputation of those fields
-        TODO hard code equivalent titles to merge bins: {'Mme': 8, 'Miss': 3, 'Capt': 15, 'Rev': 6, 'Don': 5, 'Dr': 7, 'Ms': 9, 'Lady': 11, 'Mr': 1, 'Mrs': 2, 'Mlle': 13, 'Master': 4, 'Sir': 12, 'Jonkheer': 16, 'Col': 14, 'Major': 10}
+        TODO hard code equivalent titles to merge bins: {'Mme': 8, 'Miss': 3, 'Capt': 15, 'Rev': 6, 'Don': 5, 'Dr': 7, \
+        'Ms': 9, 'Lady': 11, 'Mr': 1, 'Mrs': 2, 'Mlle': 13, 'Master': 4, 'Sir': 12, 'Jonkheer': 16, 'Col': 14, \
+        'Major': 10}
 
         'Lady': 11,
         'Mrs': 2, 'Mme': 8,
@@ -291,10 +328,28 @@ class DataProcessor:
         'Jonkheer': 16,
         }
         """
+
         self.df['TitleBin'] = self.df['Title'].dropna()
         self.df['TitleBin'] = self.df['TitleBin'].map(self.unique_titles).astype(int8)
         self.df['TitleBin'].fillna(value=-1)
         self.df.drop('Title', axis=1, inplace=True)
+
+        title_bin_corr = self.df.corr()['TitleBin']
+        debug("correlation between TitleBin and Gender = {}".format(title_bin_corr['Gender']))
+        debug("correlation between TitleBin and Age = {}".format(title_bin_corr['Age']))
+
+        proposed_correlated_features = {'Gender', 'Age'}
+        log_count_feature_by_title_bin = lambda feature: debug(
+            "AVERAGE('{}') FROM df GROUP BY 'TitleBin' = {}".format(
+                feature, self.df.groupby('TitleBin')[feature].sum()))
+        list(map(log_count_feature_by_title_bin, proposed_correlated_features))
+        jointplot('Gender', 'TitleBin', self.df)
+        tight_layout()
+        savefig('_'.join((plot_file_base, 'gender_vs_titlebin')))
+
+        jointplot('Age', 'TitleBin', self.df)
+        tight_layout()
+        savefig('_'.join((plot_file_base, 'age_vs_titlebin')))
 
     def enumerate_feature(self, feature, enum_feature):
         self.df[enum_feature] = self.df[feature].dropna()
@@ -352,7 +407,8 @@ class DataProcessor:
         debug("COUNT(DISTINCT 'Title') FROM df GROUP BY 'Title' = {} (sum={})".format(
             self.df.groupby('Title').Title.count(), self.df.groupby('Title').Title.count().sum()))
 
-    def tokenize_title_from_name(self, name_str):
+    @staticmethod
+    def tokenize_title_from_name(name_str):
         split_on_commas = name_str.split(sep=", ", maxsplit=1)
         if split_on_commas is None or len(split_on_commas) < 2:
             return None
@@ -445,14 +501,6 @@ def test(model, ids, X):
         csv_writer.writerows(zip(ids, y_hat))
 
 
-def epoch_seconds_now():
-    """
-    :return: whole number of seconds since midnight on New Year's night, 1970, until the current moment.
-    :rtype: int
-    """
-    return int(datetime.now().timestamp())
-
-
 def model_prediction(model, X, y=None):
     y_hat = model.predict(X)
     debug("prediction shape = {}".format(y_hat.shape))
@@ -498,11 +546,11 @@ def model_selection():
         "mlpc": MLPClassifier(verbose=True)
     }
 
-    independant_classifiers(classifiers, train_set, test_set)
+    independent_classifiers(classifiers, train_set, test_set)
     voting_classification(classifiers, train_set, test_set)
 
 
-def independant_classifiers(classifiers, train_set, test_set):
+def independent_classifiers(classifiers, train_set, test_set):
     for model_name in classifiers.keys():
         model = classifiers[model_name]
         info("%s training %s" % (model_name, model))
@@ -521,12 +569,8 @@ def voting_classification(classifiers, train_set, test_set):
 
 
 def setup_logger():
-    current_file = str(__file__)
-    file_name_core = current_file[:-3].split(sep)[-1]
-    log_file_name = file_name_core + '_' + str(epoch_seconds_now()) + ".log"
-
     # TODO current_path =
-    log_file_rel_path = sep.join(("out", "log", log_file_name))
+    log_file_rel_path = sep.join(("out", "log", out_file_no_path + ".log"))
 
     logger_stream_ = open(log_file_rel_path, "a")
     basicConfig(level=DEBUG, stream=logger_stream_)
