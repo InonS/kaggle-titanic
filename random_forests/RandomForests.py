@@ -4,7 +4,7 @@ from csv import writer as csv_writer_
 from datetime import datetime
 from logging import DEBUG, basicConfig, debug, info, warning
 from os import cpu_count
-from os.path import altsep, pardir, sep
+from os.path import sep
 
 from numpy import bincount, nan, unique, zeros
 from pandas import DataFrame, qcut, read_csv
@@ -21,6 +21,7 @@ class DataProcessor:
     """
     TODO inherit sklearn.base.TransformerMixin
 
+    Pre-processing procedures:
     1) Enrich features by bringing in more sources
     2) Remove any known background biases
     3) Encoding (a.k.a. enumeration) of categorical features
@@ -32,12 +33,23 @@ class DataProcessor:
         a) Imputation of missing values (zero, mean, median, random draw from the hot deck distribution, k-nn, etc. based on dataset statistics)
         b) Sub-sampling: Censoring, Binning (the limit of which is Binarization)
     8) Enrich features (e.g. generating polynomial features)
+
+    Implementation overview:
+    A. Descriptive feature engineering:
+        Features which can be assumed to correlate with at least one feature which has missing values.
+    B. Imputation
+    C. Predictive feature engineering:
+        Features which can be assumed to correlate with the target variable.
     """
 
     def __init__(self, data_file_path):
         self.data_file_path = data_file_path
 
         self.df = DataFrame(read_csv(self.data_file_path, header=0))  # cast as DataFrame to disambiguate type inference
+
+        self.passenger_ids = None
+        self.X = None
+        self.y = None
 
         info("information schema description:")
         self.information_schema_description()
@@ -192,15 +204,15 @@ class DataProcessor:
         self.df.drop(['Sex'], axis=1, inplace=True)
 
     def enumerate_values(self, feature_name: str) -> None:
-        """
-        TODO enumerate using positive and negative integers symmetrically around zero,
-        with more common values mapped to enumeration closer to zero.
-        """
-        feature_values = self.df[feature_name]
-        unique_values = feature_values.unique()
-        debug("unique " + feature_name + " values: {}".format(unique_values))
-        unique_values_dict = {v: i for i, v in enumerate(unique_values)}
-        self.df[feature_name + '_enum'] = feature_values.map(unique_values_dict).astype(int)
+        series = self.df[feature_name]
+        modes = series.mode()
+        debug("unique " + feature_name + " modes (sorted): {}".format(modes))
+
+        def symmetrize_by_pairity(order):
+            return order / 2 if order % 2 == 0 else int((order + 1) / -2)
+
+        unique_values_dict = {mode: symmetrize_by_pairity(order) for order, mode in enumerate(modes)}
+        self.df[feature_name + '_enum'] = series.map(unique_values_dict).astype(int)
 
     def missing_attributes_summary(self):
         for i, s in enumerate(self.df):
@@ -262,6 +274,22 @@ class DataProcessor:
         """
         correlates with gender and age? assist in imputation of those fields
         TODO hard code equivalent titles to merge bins: {'Mme': 8, 'Miss': 3, 'Capt': 15, 'Rev': 6, 'Don': 5, 'Dr': 7, 'Ms': 9, 'Lady': 11, 'Mr': 1, 'Mrs': 2, 'Mlle': 13, 'Master': 4, 'Sir': 12, 'Jonkheer': 16, 'Col': 14, 'Major': 10}
+
+        'Lady': 11,
+        'Mrs': 2, 'Mme': 8,
+        'Ms': 9,
+        'Mlle': 13, 'Miss': 3,
+
+        'Capt': 15,
+        'Col': 14, 'Major': 10
+        'Dr': 7,
+        'Rev': 6,
+        'Sir': 12,
+        'Mr': 1,  'Don': 5,
+        'Master': 4,
+
+        'Jonkheer': 16,
+        }
         """
         self.df['TitleBin'] = self.df['Title'].dropna()
         self.df['TitleBin'] = self.df['TitleBin'].map(self.unique_titles).astype(int8)
@@ -435,7 +463,7 @@ def model_prediction(model, X, y=None):
         debug("score = %f" % score)
 
         scores = cross_val_score(model, X, y, n_jobs=cpu_count() - 2, verbose=3)
-        debug("cross-validation scores: {}".format(scores))  # [ 0.78787879  0.83164983  0.81144781]
+        debug("cross-validation scores: {}".format(scores))
 
         y_hat = cross_val_predict(model, X, y, n_jobs=cpu_count() - 2, verbose=3)
     return y_hat
